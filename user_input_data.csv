@@ -1,0 +1,3 @@
+Age,Sex,BMI,Education,Income,HighBP,HighChol,CholCheck,Smoker,Stroke,HeartDiseaseAttack,PhysActivity,Fruits,Veggies,HeavyAlcohol,Healthcare,NoDocCost,DiffWalk,GeneralHealth,MentalHealthDays,PhysicalHealthDays,timestamp,prediction,probability
+18-24,Male,45.0,College graduate,"Less than 10,000",Yes,No,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,Yes,No,Fair,18,0,2025-05-04 20:11:42,Low,0.20432772497277232
+30-34,Male,55.0,Never attended school,"Less than 10,000",Yes,Yes,Yes,Yes,Yes,No,Yes,Yes,Yes,No,Yes,Yes,No,Good,17,11,2025-05-04 20:13:51,High,0.5292923070545266
