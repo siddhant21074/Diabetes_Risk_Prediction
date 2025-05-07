@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import os
+import mysql.connector
 from datetime import datetime
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -11,7 +12,7 @@ from sklearn.linear_model import LogisticRegression
 st.set_page_config(
     page_title="Diabetes Prediction App",
     page_icon="🩺",
-    layout="centered"
+    layout="wide"  # Changed to wide to accommodate sidebar
 )
 
 # App title and description
@@ -20,6 +21,119 @@ st.markdown("Enter your health information to check your diabetes risk")
 
 # Define the path for saving user input data
 DATA_PATH = "user_input_data.csv"
+
+# Database configuration
+# Adding database configuration input in sidebar
+st.sidebar.header("Database Settings")
+db_host = st.sidebar.text_input("Database Host", "localhost")
+db_user = st.sidebar.text_input("Database User", "root")
+db_password = st.sidebar.text_input("Database Password", type="password")
+db_name = st.sidebar.text_input("Database Name", "diabetes_prediction")
+
+# Store DB config in session state so it persists
+if 'db_config' not in st.session_state:
+    st.session_state.db_config = {
+        'host': db_host,
+        'user': db_user,
+        'password': db_password,
+        'database': db_name
+    }
+else:
+    # Update session state if values change
+    if (db_host != st.session_state.db_config['host'] or
+        db_user != st.session_state.db_config['user'] or
+        db_password != st.session_state.db_config['password'] or
+        db_name != st.session_state.db_config['database']):
+        
+        st.session_state.db_config = {
+            'host': db_host,
+            'user': db_user,
+            'password': db_password,
+            'database': db_name
+        }
+
+# Function to connect to MySQL database
+def connect_to_database():
+    try:
+        conn = mysql.connector.connect(**st.session_state.db_config)
+        return conn
+    except mysql.connector.Error as err:
+        st.error(f"Database connection error: {err}")
+        return None
+
+# Function to save prediction data to MySQL
+def save_to_database(input_data, probability, prediction):
+    conn = connect_to_database()
+    if not conn:
+        return False
+    
+    cursor = conn.cursor()
+    
+    # Extract data from DataFrame
+    data = input_data.iloc[0]
+    
+    # Convert numpy float64 to Python float
+    prob_value = float(probability.item()) if hasattr(probability, 'item') else float(probability)
+    
+    # Convert any potential numpy values to Python native types
+    bmi_value = float(data['BMI']) if hasattr(data['BMI'], 'item') else float(data['BMI'])
+    mental_health_value = int(data['MentalHealthDays']) if hasattr(data['MentalHealthDays'], 'item') else int(data['MentalHealthDays'])
+    physical_health_value = int(data['PhysicalHealthDays']) if hasattr(data['PhysicalHealthDays'], 'item') else int(data['PhysicalHealthDays'])
+    
+    # Prepare query
+    query = """
+    INSERT INTO diabetes_predictions (
+        timestamp, age, sex, bmi, education, income, high_bp, high_chol, 
+        chol_check, smoker, stroke, heart_disease, phys_activity, fruits, 
+        veggies, heavy_alcohol, healthcare, no_doc_cost, general_health, 
+        mental_health, physical_health, diff_walk, prediction, probability
+    ) VALUES (
+        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+        %s, %s, %s, %s, %s, %s, %s, %s
+    )
+    """
+    
+    # Prepare data tuple with converted values
+    values = (
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        str(data['Age']),
+        str(data['Sex']),
+        bmi_value,
+        str(data['Education']),
+        str(data['Income']),
+        str(data['HighBP']),
+        str(data['HighChol']),
+        str(data['CholCheck']),
+        str(data['Smoker']),
+        str(data['Stroke']),
+        str(data['HeartDiseaseAttack']),
+        str(data['PhysActivity']),
+        str(data['Fruits']),
+        str(data['Veggies']),
+        str(data['HeavyAlcohol']),
+        str(data['Healthcare']),
+        str(data['NoDocCost']),
+        str(data['GeneralHealth']),
+        mental_health_value,
+        physical_health_value,
+        str(data['DiffWalk']),
+        str(prediction),
+        prob_value
+    )
+    
+    try:
+        cursor.execute(query, values)
+        conn.commit()
+        success = True
+    except mysql.connector.Error as err:
+        st.error(f"Database error: {err}")
+        conn.rollback()
+        success = False
+    finally:
+        cursor.close()
+        conn.close()
+    
+    return success
 
 @st.cache_resource
 def load_model():
@@ -204,10 +318,25 @@ if st.button("Predict Diabetes Risk", type="primary"):
     prediction = model.predict(input_scaled)[0]
     
     # Save input data and prediction to CSV
-    saved = save_to_csv(readable_input, probability, 'High' if prediction == 1 else 'Low')
+    prediction_label = 'High' if prediction == 1 else 'Low'
+    saved_csv = save_to_csv(readable_input, probability, prediction_label)
     
-    if saved:
-        st.success("Input data and prediction saved successfully!")
+    # Save to MySQL database
+    if st.session_state.db_config['password']:  # Only try to save to DB if password is provided
+        saved_db = save_to_database(readable_input, probability, prediction_label)
+        
+        if saved_csv and saved_db:
+            st.success("Input data and prediction saved successfully to CSV and database!")
+        elif saved_csv:
+            st.warning("Data saved to CSV but database save failed. Check database connection.")
+        else:
+            st.error("Failed to save data!")
+    else:
+        if saved_csv:
+            st.success("Input data and prediction saved successfully to CSV!")
+            st.info("Database credentials not provided. Data not saved to database.")
+        else:
+            st.error("Failed to save data to CSV!")
     
     # Display results
     st.markdown("---")
@@ -266,18 +395,72 @@ with st.expander("About this prediction model"):
     """)
 
 # Add a section to view saved data (for admin purposes)
-with st.expander("View Saved Data "):
-    if os.path.exists(DATA_PATH):
-        saved_data = pd.read_csv(DATA_PATH)
-        st.dataframe(saved_data)
+with st.expander("View Saved Data"):
+    tab1, tab2 = st.tabs(["CSV Data", "Database Data"])
+    
+    with tab1:
+        if os.path.exists(DATA_PATH):
+            saved_data = pd.read_csv(DATA_PATH)
+            st.dataframe(saved_data)
+            
+            # Option to download the data
+            csv = saved_data.to_csv(index=False)
+            st.download_button(
+                label="Download Data as CSV",
+                data=csv,
+                file_name="diabetes_prediction_data.csv",
+                mime="text/csv",
+            )
+        else:
+            st.info("No data has been saved to CSV yet.")
+    
+    with tab2:
+        st.info("Make sure to enter your database credentials in the sidebar before attempting to view database data.")
+        db_test_button = st.button("Test Database Connection")
         
-        # Option to download the data
-        csv = saved_data.to_csv(index=False)
-        st.download_button(
-            label="Download Data as CSV",
-            data=csv,
-            file_name="diabetes_prediction_data.csv",
-            mime="text/csv",
-        )
-    else:
-        st.info("No data has been saved yet.")
+        if db_test_button:
+            conn = connect_to_database()
+            if conn:
+                st.success("Successfully connected to database!")
+                conn.close()
+        
+        if st.button("Load Database Data"):
+            if not st.session_state.db_config['password']:
+                st.warning("Please enter database credentials in the sidebar")
+            else:
+                conn = connect_to_database()
+                if conn:
+                    try:
+                        # First check if table exists
+                        cursor = conn.cursor()
+                        cursor.execute("""
+                            SELECT COUNT(*)
+                            FROM information_schema.tables
+                            WHERE table_schema = %s
+                            AND table_name = 'diabetes_predictions'
+                        """, (st.session_state.db_config['database'],))
+                        
+                        if cursor.fetchone()[0] == 0:
+                            st.warning("Table 'diabetes_predictions' does not exist. Please run the SQL setup script first.")
+                        else:
+                            query = "SELECT * FROM diabetes_predictions ORDER BY timestamp DESC"
+                            db_data = pd.read_sql(query, conn)
+                            if len(db_data) > 0:
+                                st.dataframe(db_data)
+                                
+                                # Option to download the data
+                                csv = db_data.to_csv(index=False)
+                                st.download_button(
+                                    label="Download Database Data as CSV",
+                                    data=csv,
+                                    file_name="diabetes_prediction_db_data.csv",
+                                    mime="text/csv",
+                                )
+                            else:
+                                st.info("No data found in database table.")
+                    except mysql.connector.Error as err:
+                        st.error(f"Error fetching data from database: {err}")
+                    finally:
+                        conn.close()
+                else:
+                    st.error("Could not connect to database")
